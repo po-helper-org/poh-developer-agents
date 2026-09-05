@@ -14,7 +14,7 @@ import re
 
 import pytest
 
-from poh_developer import develop
+from poh_developer import develop, runner
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNNER_DOCKERFILE = REPO_ROOT / "agent" / "Dockerfile"
@@ -179,12 +179,14 @@ def test_runner_node_major_is_pinned_to_the_declared_one():
                       RUNNER_DOCKERFILE.read_text(encoding="utf-8"))
 
     assert found, "не нашёл установку Node в образе раннера"
-    assert int(found.group(1)) == RUNNER_NODE_MAJOR
+    assert int(found.group(1)) == runner.RUNNER_NODE_MAJOR
 
 
-# Мажор Node, на котором исполняется код целевого репозитория. Меняется
-# ВМЕСТЕ с образом воркера в `poh-issue-agents` — см. тест выше.
-RUNNER_NODE_MAJOR = 22
+def test_the_uid_the_other_repo_reads_is_the_one_the_stage_declares():
+    """`poh_developer.runner` — единая точка входа для чужого образа, а не
+    второй источник правды: значение обязано совпадать с объявленным в
+    контракте прогона."""
+    assert runner.RUNNER_UID == develop.RUNNER_UID
 
 
 # --- Служебные файлы ---

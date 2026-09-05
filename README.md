@@ -61,6 +61,7 @@ system_requirements.md + ready-for-dev
 | [`docs/stage-contract.md`](docs/stage-contract.md) | вход, выход, чего нельзя требовать, контракт исполнителя | **здесь** |
 | [`docs/gaps.md`](docs/gaps.md) | разрывы и долги — восемь пунктов, каждый под задачу | **здесь** |
 | [`docs/extraction-plan.md`](docs/extraction-plan.md) | как соединить обратно с `poh-issue-agents` | **здесь** |
+| [`docs/design/2026-09-05-developer-as-a-service-design.md`](docs/design/2026-09-05-developer-as-a-service-design.md) | принятый замысел: стадия становится отдельным сервисом | **здесь** |
 | [`docs/design/`](docs/design/) | проектный след: замыслы и планы, по которым стадия построена | `poh-issue-agents` (копия) |
 | `poh_developer/` | чистые модули стадии: контракт, разбор JUnit, круг правок, публикация дерева | `poh-issue-agents` (копия) |
 | `agent/Dockerfile` | образ агента разработки (OpenHands 1.16.0) | `poh-issue-agents` (копия) |
@@ -84,10 +85,12 @@ poh_developer/
   test_report.py   имена упавших тестов из JUnit XML — основа диагноза красноты
   pr_closing.py    круг правок: потолок кругов, метка очереди к человеку
   worktree.py      коммит и пуш рабочего дерева агента, общее для GitHub и GitLab
+  runner.py        инварианты образа раннера, с которыми обязан совпасть образ
+                   воркера в соседнем репозитории: мажор Node, uid
 ```
 
-Все четыре — только стандартная библиотека: ни сети, ни Temporal, ни GitHub.
-Это и есть граница, по которой стадия вынимается из сервиса.
+Все — только стандартная библиотека: ни сети, ни Temporal, ни GitHub. Это и
+есть граница, по которой стадия вынимается из сервиса.
 
 ## Обвязка целевого репозитория
 
