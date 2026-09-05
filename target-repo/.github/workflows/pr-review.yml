@@ -1,0 +1,192 @@
+# Ревью PR (PR-Agent на GLM) + доклад в цикл Issue.
+#
+# Два входа, один код ревью:
+#
+#   workflow_call   — вызов из прогона разработки сразу после открытия PR.
+#                     Именно вызов, а не отдельный триггер: PR, созданный
+#                     GITHUB_TOKEN, НЕ порождает событий workflow (правило
+#                     GitHub против рекурсии), и ревью по событию `pull_request`
+#                     на таком PR не запустилось бы никогда. Вызванный workflow
+#                     идёт частью того же прогона и этого ограничения не знает.
+#
+#   issue_comment   — повторная проверка после правок: человек (или Claude Code)
+#                     пишет `/review` в PR. Комментарий от живого пользователя
+#                     события порождает, здесь ограничения нет.
+#
+# Ревью гоняется CLI-образом pr-agent, а не GitHub Action'ом: action читает
+# событие прогона и на `workflow_call` не нашёл бы PR, о котором речь. CLI
+# принимает адрес PR явным аргументом и одинаково работает с обоих входов.
+name: PR Review
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      root_issue:
+        required: false
+        type: string
+        default: ''
+  issue_comment:
+    types: [created]
+
+  #   pull_request    — PR открыл агент разработки, который живёт НЕ в Actions.
+  #                     В режиме `local` контур пишет код и открывает PR внутри
+  #                     стенда, своим GitHub App: `openhands-resolver.yml` не
+  #                     запускается вовсе, а значит `workflow_call` некому
+  #                     сделать. Ревью не начиналось никогда, цикл оставался в
+  #                     фазе `pr-open` до истечения срока — и выглядело это как
+  #                     зависший PR-Agent. Токен App не GITHUB_TOKEN, поэтому
+  #                     правило GitHub против рекурсии здесь не действует и
+  #                     событие приходит.
+  pull_request:
+    types: [opened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    name: ревью PR
+    runs-on: ubuntu-latest
+    # Вход различается по `inputs`, а НЕ по `github.event_name`: вызванный
+    # workflow наследует контекст вызывающего, и `event_name` там показывает
+    # исходное событие (`workflow_dispatch`), а не `workflow_call`. Условие на
+    # `event_name` молча пропускало ревью после каждой разработки.
+    #
+    # Для комментария: только в PR и только команда `/review`. Фильтр по
+    # `user.type != 'Bot'` снят: перепроверку после круга правок запрашивает сам
+    # цикл, и пишет он токеном GitHub App — то есть ботом. С фильтром круг
+    # правок вносил изменения и ждал ревью, которое не запускалось. Петли это не
+    # создаёт: ни один ответ агентов не начинается с `/review`, а число кругов
+    # ограничено PR_FIX_MAX_ROUNDS.
+    if: >-
+      inputs.pr_number != '' ||
+      github.event_name == 'pull_request' ||
+      (github.event.issue.pull_request != null &&
+       startsWith(github.event.comment.body, '/review'))
+    timeout-minutes: 20
+
+    env:
+      PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number || github.event.issue.number }}
+      GH_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
+
+    steps:
+      - name: Рубильник человека
+        # Правило R4: проверка раньше первого обращения к LLM. `agents:off` на
+        # PR либо на связанном Issue останавливает ревью до траты бюджета.
+        id: gate
+        run: |
+          set -euo pipefail
+          labels=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                     --json labels --jq '.labels[].name')
+          if grep -qix 'agents:off' <<<"$labels"; then
+            echo "::notice::agents:off на PR #$PR_NUMBER — ревью не запускается"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ревью
+        id: review
+        if: steps.gate.outputs.go == 'true'
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ vars.PR_AGENT_MODEL || 'openai/glm-4.6' }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL || 'https://api.z.ai/api/coding/paas/v4' }}
+        run: |
+          set -uo pipefail
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${PR_NUMBER}"
+
+          # pr-agent ВЫХОДИТ НУЛЁМ, даже когда ревью не состоялось: на
+          # rate-limit модели он пишет `Failed to review PR` в лог, оставляет в
+          # PR заглушку «Preparing review...» и завершается успешно. Шаг Actions
+          # отчитывался успехом, цикл получал `status=started`, и круг правок
+          # уходил доводить PR по пустому тексту. Поэтому исход определяется по
+          # выводу, а не по коду возврата.
+          review() {
+            # persistent_comment (дефолт) переписывает ОДИН верхний комментарий
+            # «PR Reviewer Guide» вместо того, чтобы плодить новый на каждый круг.
+            # Именно поэтому «замечаний нет» видно как исчезнувший пункт, а не как
+            # отдельное сообщение.
+            docker run --rm \
+              -e "OPENAI.KEY=${LLM_API_KEY}" \
+              -e "OPENAI.API_BASE=${LLM_BASE_URL}" \
+              -e "CONFIG.MODEL=${LLM_MODEL}" \
+              -e "CONFIG.FALLBACK_MODELS=[]" \
+              -e "CONFIG.CUSTOM_MODEL_MAX_TOKENS=128000" \
+              -e "CONFIG.GIT_PROVIDER=github" \
+              -e "CONFIG.PUBLISH_OUTPUT=true" \
+              -e "GITHUB.USER_TOKEN=${GH_TOKEN}" \
+              -e "GITHUB.DEPLOYMENT_TYPE=user" \
+              codiumai/pr-agent:latest --pr_url "$url" review 2>&1 | tee /tmp/review.log
+            ! grep -q "Failed to review PR" /tmp/review.log
+          }
+
+          # Один повтор с паузой: rate-limit — состояние на минуту, а не отказ.
+          # Больше одного не нужно: если ключ выбран надолго, PR подождёт
+          # человека, а не будет жечь минуты раннера.
+          review && exit 0
+          echo "::warning::ревью не удалось с первого раза — повтор через 90 с"
+          sleep 90
+          review
+
+      - name: Доложить в цикл Issue
+        # Уходит всегда: цикл ждёт в фазе `pr-open`, и молчание провалившегося
+        # ревью оставило бы задачу там навсегда. Нечем доложить — тоже факт.
+        if: always() && steps.gate.outputs.go == 'true'
+        env:
+          ISSUE_AGENT_URL: ${{ secrets.ISSUE_AGENT_URL }}
+          AGENT_EVENT_SECRET: ${{ secrets.AGENT_EVENT_SECRET }}
+          ROOT_ISSUE: ${{ inputs.root_issue }}
+          REVIEW_OUTCOME: ${{ steps.review.outcome }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ISSUE_AGENT_URL:-}" ] || [ -z "${AGENT_EVENT_SECRET:-}" ]; then
+            echo "::warning::ISSUE_AGENT_URL/AGENT_EVENT_SECRET не заданы — событие не отправлено"
+            exit 0
+          fi
+
+          # Ключ задачи: из входа вызова, иначе из тела PR. Несколько `Closes #N`
+          # оставляют ключ пустым намеренно — выбрать первый попавшийся значит
+          # привязать работу не к той задаче.
+          root="$ROOT_ISSUE"
+          if [ -z "$root" ]; then
+            body=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+            mapfile -t found < <(grep -oiE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)[: ]+#[0-9]+' <<<"$body" \
+                                 | grep -oE '[0-9]+' | sort -u)
+            [ "${#found[@]}" -eq 1 ] && root="${found[0]}"
+          fi
+
+          if [ "$REVIEW_OUTCOME" = "success" ]; then
+            status=started
+            detail="PR-Agent опубликовал ревью на PR #${PR_NUMBER}"
+          else
+            status=failed
+            detail="Ревью не выполнено: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          fi
+
+          # Ревизия, по которой шло ревью, входит в ключ идемпотентности цикла.
+          # Без неё каждый круг правок докладывал одну и ту же тройку
+          # `(ref, phase, status)`, второй доклад отбрасывался как повторная
+          # доставка — и круг правок физически не мог пройти дважды.
+          revision=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                       --json headRefOid --jq .headRefOid)
+
+          payload=$(jq -nc --arg repo "$GITHUB_REPOSITORY" --arg status "$status" \
+            --arg ref "$PR_NUMBER" --arg detail "$detail" --arg root "$root" \
+            --arg revision "$revision" \
+            '{repo:$repo, agent:"pr-agent", phase:"pr-review", status:$status,
+              ref:$ref, detail:$detail, revision:$revision}
+             + (if $root == "" then {} else {root_issue: ($root|tonumber)} end)')
+
+          sig="sha256=$(printf '%s' "$payload" \
+            | openssl dgst -sha256 -hmac "$AGENT_EVENT_SECRET" -r | cut -d' ' -f1)"
+
+          curl -sS --fail-with-body -X POST "${ISSUE_AGENT_URL%/}/agent-event" \
+            -H 'Content-Type: application/json' \
+            -H "X-Agent-Signature-256: $sig" \
+            -d "$payload"

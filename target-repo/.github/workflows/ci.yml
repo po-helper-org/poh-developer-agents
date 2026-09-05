@@ -1,0 +1,28 @@
+# Проверка каждого PR и каждого коммита в main.
+#
+# Зависимостей у сервиса нет намеренно — это его свойство, а не упущение, и
+# `npm ci` здесь молча создал бы их появлению повод.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: тесты
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test "tests/*.test.mjs"

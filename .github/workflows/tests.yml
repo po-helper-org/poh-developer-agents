@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: тесты чистых модулей
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  drift:
+    # Отдельным job, а не шагом тестов: расхождение копий — не поломка кода,
+    # и красить им прогон тестов значит приучить смотреть мимо обоих.
+    #
+    # `continue-on-error`, потому что источник правды сегодня ТАМ: расхождение
+    # это сигнал «догнать», а не «чинить». Снимается вместе с копиями на шаге 3
+    # плана переноса, когда источником станет этот репозиторий.
+    name: сверка копий с poh-issue-agents
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/drift.sh

@@ -1,0 +1,299 @@
+# Активность Develop контура: подготовленный Issue → ветка → код → PR.
+#
+# Issue-Agent доводит задачу до `ready-for-dev` и системных требований, после чего
+# диспатчит этот workflow (`shared/develop.py` в poh-issue-agents). Код пишет
+# OpenHands в headless-режиме — прямо на раннере, без Docker-песочницы: раннер
+# одноразовый и сам является песочницей, а поднимать внутри него ещё одну значит
+# платить минутами за изоляцию, которая уже есть.
+#
+# Почему `workflow_dispatch`, а не метка-триггер. Метка — состояние, а не событие:
+# повторная постановка уже висящей метки не шлёт ничего, и запуск теряется молча.
+# Второй вход по метке `fix-me` оставлен как ручной дублёр для человека — им
+# запускают прогон без Temporal, когда цикл почему-то не поднялся.
+#
+# Токен по умолчанию — штатный GITHUB_TOKEN раннера: PR-Agent здесь работает как
+# GitHub App по вебхуку, а вебхуки App приходят независимо от того, кто автор PR.
+# Секрет `PAT_TOKEN` перебивает его и нужен ровно в одном случае: если ревью
+# переведут обратно на GitHub Actions. PR, созданный GITHUB_TOKEN, НЕ порождает
+# событий workflow, и Actions-ревью на нём не запустилось бы.
+name: OpenHands Resolver
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue, который берём в разработку
+        required: true
+      research_branch:
+        description: Ветка с артефактами аналитики (пусто — аналитики не было)
+        required: false
+        default: ''
+      priority:
+        description: Приоритет задачи по формуле Issue-Agent
+        required: false
+        default: ''
+  issues:
+    types: [labeled]
+
+# Права выданы job'ам явно и минимально: ветка и коммит (contents), SubIssue по
+# найденным edge-кейсам (issues), сам PR (pull-requests).
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  # Рубильник человека — отдельным job, а не первым шагом разработки. Причина не
+  # косметическая: упавший шаг внутри `develop` сделал бы весь прогон `failure`,
+  # и финальный доклад (`if: always()`) сообщил бы циклу «разработка сорвалась».
+  # Но `agents:off` — это не сбой, а решение человека забрать задачу себе, и
+  # докладывать о нём как о провале значит врать циклу. Отдельный job даёт
+  # третий исход: `develop` не запускается вовсе и не докладывает ничего.
+  gate:
+    name: проверка рубильника
+    runs-on: ubuntu-latest
+    # Ручной вход отрабатывает только по своей метке. Без этого условия job
+    # запускался бы на КАЖДОЙ метке, которую вешает триаж Issue-Agent, — то есть
+    # несколько раз подряд на каждой новой задаче.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'fix-me'
+    outputs:
+      go: ${{ steps.check.outputs.go }}
+    steps:
+      - id: check
+        # Правило R4 протокола агентов: проверка раньше первого обращения к LLM.
+        # Смысл в том, чтобы не тратить бюджет на то, что человек уже забрал себе.
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
+          ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          labels=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                     --json labels --jq '.labels[].name')
+          if grep -qix 'agents:off' <<<"$labels"; then
+            echo "::notice::agents:off на #$ISSUE_NUMBER — прогон не начинается"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  develop:
+    name: разработка по Issue
+    runs-on: ubuntu-latest
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
+    timeout-minutes: 45
+    # Ограничение на УРОВНЕ JOB, а не workflow. На уровне workflow оно убивало
+    # собственный прогон: каждая метка, которую вешает Issue-Agent, порождает
+    # событие `issues.labeled`, такой прогон попадает в ту же группу и, хотя все
+    # его job'ы пропускаются, всё равно вытесняет идущую разработку. Job в группу
+    # не входит, пока не запустился, поэтому пропущенные прогоны безвредны.
+    #
+    # Сама группа нужна: две ветки от одного Issue дают два PR с одним
+    # `Closes #N`, и корреляция события с задачей становится неоднозначной —
+    # ровно тот случай, который Issue-Agent отказывается разрешать догадкой.
+    concurrency:
+      group: openhands-${{ github.event.inputs.issue_number || github.event.issue.number }}
+      cancel-in-progress: true
+    outputs:
+      pr_number: ${{ steps.pr.outputs.number }}
+
+    env:
+      ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
+      RESEARCH_BRANCH: ${{ github.event.inputs.research_branch }}
+      PRIORITY: ${{ github.event.inputs.priority }}
+      # Токен виден и агенту: SubIssue по найденным edge-кейсам он заводит сам,
+      # своим `gh issue create` изнутри прогона.
+      GH_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
+      GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Полная история: ветку работы заводим от main, а diff считаем от него же.
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Версия точная, не плавающая: у setup-uv нет тегов-мажоров выше v8 —
+      # `@v10` не резолвится вовсе, и прогон падает на подготовке job'а.
+      - uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Установить OpenHands
+        run: uv tool install openhands --python 3.12
+
+      - name: Собрать постановку для агента
+        # Постановка собирается ЗДЕСЬ, а не в промпте агента: то, что уехало в
+        # работу, должно быть видно в логе прогона дословно. Иначе на разборе
+        # «почему агент сделал не то» нечего предъявить.
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/oh"
+          task="$RUNNER_TEMP/oh/task.md"
+
+          {
+            echo "# Задача: реализовать Issue #$ISSUE_NUMBER"
+            echo
+            gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --json title,body --template '## {{.title}}{{"\n\n"}}{{.body}}'
+            echo
+          } > "$task"
+
+          if [ -n "$RESEARCH_BRANCH" ] && git ls-remote --exit-code --heads origin "$RESEARCH_BRANCH" >/dev/null 2>&1; then
+            echo "## Системные требования (аналитика Issue-Agent)" >> "$task"
+            echo >> "$task"
+            git fetch --depth 1 origin "$RESEARCH_BRANCH"
+            # Каталог фиксирован сервисом аналитики (`FNR_DIR` в poh-issue-agents),
+            # ветка своя на каждый Issue. Порядок задан явно — требования первыми:
+            # то, что агент прочитает раньше, весит больше, а `task.md` и
+            # `concept.md` это путь к требованиям, а не сами требования.
+            # Отсутствующий файл — не сбой: набор артефактов у прогонов разный.
+            for f in system_requirements.md task.md concept.md; do
+              path="sa_documentation/FNR/FNR_1/$f"
+              if git cat-file -e "FETCH_HEAD:$path" 2>/dev/null; then
+                echo "### $f" >> "$task"
+                git show "FETCH_HEAD:$path" >> "$task"
+                echo >> "$task"
+              fi
+            done
+          else
+            echo "## Аналитики по задаче нет — работай от тела Issue." >> "$task"
+            echo >> "$task"
+          fi
+
+          # Правила работы лежат файлом в репозитории, а не строкой внутри
+          # workflow: их правит тот, кто правит конвенции проекта, и держать их
+          # в YAML значило бы прятать контракт от того, кому он адресован.
+          cat .openhands/task-rules.md >> "$task"
+
+          echo "::group::постановка, ушедшая агенту"
+          cat "$task"
+          echo "::endgroup::"
+
+      - name: Ветка работы
+        run: |
+          set -euo pipefail
+          git config user.name  "openhands-agent"
+          git config user.email "openhands-agent@users.noreply.github.com"
+          echo "WORK_BRANCH=feature/${ISSUE_NUMBER}-openhands" >> "$GITHUB_ENV"
+          git checkout -b "feature/${ISSUE_NUMBER}-openhands"
+
+      - name: Прогон OpenHands
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || 'openai/glm-4.6' }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL || 'https://api.z.ai/api/coding/paas/v4' }}
+          OPENHANDS_SUPPRESS_BANNER: '1'
+        run: |
+          set -euo pipefail
+          openhands --headless --override-with-envs -f "$RUNNER_TEMP/oh/task.md"
+
+      - name: Проверки
+        # Тот же прогон, что и в CI. Гоняется ЗДЕСЬ, а не только на PR: PR,
+        # созданный GITHUB_TOKEN, не порождает событий workflow, поэтому CI на
+        # нём не запускается вовсе. Без этого шага красный код уезжал бы в PR
+        # без единого признака того, что он красный.
+        #
+        # Падение здесь останавливает прогон до пуша: ветки и PR не будет, а
+        # цикл получит доклад о провале и вернёт задачу человеку.
+        run: node --test "tests/*.test.mjs"
+
+      - name: Коммит и пуш
+        id: push
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::агент не изменил ни одного файла"
+            exit 0
+          fi
+          git commit \
+            -m "feat(#${ISSUE_NUMBER}): реализация по системным требованиям" \
+            -m "Автор изменений — OpenHands, запущен активностью Develop по Issue #${ISSUE_NUMBER}."
+          git push -u origin "$WORK_BRANCH"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Открыть PR
+        id: pr
+        if: steps.push.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          # `Closes #N` — сквозной ключ цепочки: по нему Issue-Agent связывает PR
+          # с задачей, а GitHub закрывает её при слиянии.
+          body="$RUNNER_TEMP/oh/pr-body.md"
+          {
+            printf 'Closes #%s\n\n' "$ISSUE_NUMBER"
+            printf 'Разработку вёл OpenHands по системным требованиям из `%s`.\n' "${RESEARCH_BRANCH:-—}"
+            printf 'Найденные по дороге edge-кейсы вынесены отдельными SubIssue и в этой ветке не чинились.\n\n'
+            printf '<sub>origin: agent · root-issue: #%s</sub>\n' "$ISSUE_NUMBER"
+          } > "$body"
+
+          title=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
+          url=$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --head "$WORK_BRANCH" \
+            --title "feat(#${ISSUE_NUMBER}): ${title}" \
+            --body-file "$body")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "number=$(gh pr view "$url" --json number --jq .number)" >> "$GITHUB_OUTPUT"
+
+      - name: Доложить в цикл Issue
+        # Событие уходит ВСЕГДА (`if: always()`): цикл ждёт в фазе
+        # `in-development`, и молчание провалившегося прогона оставило бы Issue
+        # там навсегда. Нечем доложить — тоже факт, и он должен дойти.
+        if: always()
+        env:
+          ISSUE_AGENT_URL: ${{ secrets.ISSUE_AGENT_URL }}
+          AGENT_EVENT_SECRET: ${{ secrets.AGENT_EVENT_SECRET }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ISSUE_AGENT_URL:-}" ] || [ -z "${AGENT_EVENT_SECRET:-}" ]; then
+            echo "::warning::ISSUE_AGENT_URL/AGENT_EVENT_SECRET не заданы — событие не отправлено"
+            exit 0
+          fi
+
+          if [ "$JOB_STATUS" = "success" ] && [ -n "${PR_NUMBER:-}" ]; then
+            status=started; phase=pr-open
+            detail="OpenHands открыл PR ${PR_URL} — Closes #${ISSUE_NUMBER}"
+            ref="$PR_NUMBER"
+          else
+            status=failed; phase=in-development
+            detail="Прогон OpenHands завершился как ${JOB_STATUS}, PR не открыт: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            ref="run-${GITHUB_RUN_ID}"
+          fi
+
+          payload=$(jq -nc \
+            --arg repo "$GITHUB_REPOSITORY" --arg phase "$phase" --arg status "$status" \
+            --arg ref "$ref" --arg detail "$detail" --argjson root "$ISSUE_NUMBER" \
+            '{repo:$repo, agent:"openhands", phase:$phase, status:$status,
+              ref:$ref, root_issue:$root, detail:$detail}')
+
+          sig="sha256=$(printf '%s' "$payload" \
+            | openssl dgst -sha256 -hmac "$AGENT_EVENT_SECRET" -r | cut -d' ' -f1)"
+
+          curl -sS --fail-with-body -X POST "${ISSUE_AGENT_URL%/}/agent-event" \
+            -H 'Content-Type: application/json' \
+            -H "X-Agent-Signature-256: $sig" \
+            -d "$payload"
+
+  # Ревью вызовом, а не отдельным триггером: PR, созданный GITHUB_TOKEN, не
+  # порождает событий workflow, и ревью по `pull_request` на нём не запустилось
+  # бы никогда. Вызванный workflow идёт частью этого же прогона.
+  review:
+    name: ревью открытого PR
+    needs: develop
+    if: needs.develop.outputs.pr_number != ''
+    uses: ./.github/workflows/pr-review.yml
+    with:
+      pr_number: ${{ needs.develop.outputs.pr_number }}
+      root_issue: ${{ github.event.inputs.issue_number || github.event.issue.number }}
+    secrets: inherit

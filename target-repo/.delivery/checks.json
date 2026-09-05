@@ -1,0 +1,73 @@
+{
+  "_comment": "Чем Delivery-Agent подтверждает, что выкаченный сервис работает так, как описано. Проверки живут ЗДЕСЬ, а не в агенте: что считать правильным поведением, знает репозиторий, а агент это исполняет и не имеет права додумывать.",
+  "service": {
+    "port": 8080,
+    "start": "node src/server.mjs",
+    "health_path": "/healthz",
+    "image": "node:22-slim"
+  },
+  "checks": [
+    {
+      "name": "healthz",
+      "method": "GET",
+      "path": "/healthz",
+      "expect_status": 200,
+      "expect_json": {
+        "status": "ok"
+      },
+      "source": "src/server.mjs — /healthz отдаёт status и uptime_sec"
+    },
+    {
+      "name": "quote-base",
+      "method": "POST",
+      "path": "/quote",
+      "body": {
+        "items": [
+          {
+            "sku": "a",
+            "price": 1000,
+            "qty": 2
+          }
+        ]
+      },
+      "expect_status": 200,
+      "expect_json": {
+        "goods": 2000,
+        "delivery": 300,
+        "total": 2300
+      },
+      "source": "README, раздел «Сервис»: заказ на 2000 платит доставку 300"
+    },
+    {
+      "name": "quote-free-delivery-at-threshold",
+      "method": "POST",
+      "path": "/quote",
+      "body": {
+        "items": [
+          {
+            "sku": "a",
+            "price": 1500,
+            "qty": 2
+          }
+        ]
+      },
+      "expect_status": 200,
+      "expect_json": {
+        "goods": 3000,
+        "delivery": 0,
+        "total": 3000
+      },
+      "source": "pricing.mjs FREE_DELIVERY_FROM — «от 3000» включительно"
+    },
+    {
+      "name": "quote-rejects-empty-order",
+      "method": "POST",
+      "path": "/quote",
+      "body": {
+        "items": []
+      },
+      "expect_status": 400,
+      "source": "pricing.mjs subtotal — заказ без позиций это ошибка запроса, а не 500"
+    }
+  ]
+}

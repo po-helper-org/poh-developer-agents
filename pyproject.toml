@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poh-developer"
+version = "0.1.0"
+description = "Стадия «Разработка» контура производства: контракт прогона, разбор JUnit, круг правок, публикация рабочего дерева"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+# Зависимостей нет намеренно — все четыре модуля живут на стандартной
+# библиотеке. Это не аскеза, а условие переносимости: пакет ставится в образ
+# чужого воркера и не имеет права тащить туда свою версию чего бы то ни было.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/po-helper-org/poh-developer-agents"
+
+[tool.setuptools.packages.find]
+include = ["poh_developer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
