@@ -7,4 +7,4 @@
 Разбор стадии целиком — `AUDIT.md`, контракт — `docs/stage-contract.md`.
 """
 
-__all__ = ["develop", "pr_closing", "test_report", "worktree"]
+__all__ = ["develop", "pr_closing", "task_context", "test_report", "worktree"]

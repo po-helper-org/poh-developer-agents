@@ -23,6 +23,7 @@ PAIRS=(
   "poh_developer/test_report.py:shared/test_report.py"
   "poh_developer/pr_closing.py:shared/pr_closing.py"
   "poh_developer/worktree.py:worker/worktree.py"
+  "poh_developer/task_context.py:shared/task_context.py"
 )
 
 # Dockerfile образа НЕ сверяется побайтово, и это не упущение.
@@ -40,12 +41,20 @@ IMAGE_INVARIANTS=(
   "Node major:deb\\.nodesource\\.com/setup_([0-9]+)\\.x"
 )
 
+# Рабочий клон источника. Обновление идёт через FETCH_HEAD, а НЕ через
+# `origin/<ref>`: клон поверхностный и однобранчевый, remote-tracking ref на
+# произвольный DRIFT_SOURCE_REF в нём не заводится — и `reset --hard
+# origin/<ref>` падает на первой же сверке против другой ветки. FETCH_HEAD —
+# это ровно то, что мы только что забрали, чем бы оно ни было.
+#
+# Вывод git подавляется только на stdout: заглушенный stderr прятал отказ, а
+# `set -e` убивал скрипт без единой строки о причине.
 if [ ! -d "$WORK/.git" ]; then
   rm -rf "$WORK"
-  git clone --depth 1 --branch "$SOURCE_REF" "$SOURCE_REPO" "$WORK" >/dev/null 2>&1
+  git clone --depth 1 --branch "$SOURCE_REF" "$SOURCE_REPO" "$WORK" >/dev/null
 else
-  git -C "$WORK" fetch --depth 1 origin "$SOURCE_REF" >/dev/null 2>&1
-  git -C "$WORK" reset --hard "origin/$SOURCE_REF" >/dev/null 2>&1
+  git -C "$WORK" fetch --depth 1 origin "$SOURCE_REF" >/dev/null
+  git -C "$WORK" reset --hard FETCH_HEAD >/dev/null
 fi
 
 echo "источник: $SOURCE_REPO@$SOURCE_REF ($(git -C "$WORK" rev-parse --short HEAD))"
