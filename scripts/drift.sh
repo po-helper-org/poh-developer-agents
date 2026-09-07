@@ -23,7 +23,21 @@ PAIRS=(
   "poh_developer/test_report.py:shared/test_report.py"
   "poh_developer/pr_closing.py:shared/pr_closing.py"
   "poh_developer/worktree.py:worker/worktree.py"
-  "agent/Dockerfile:openhands/Dockerfile"
+)
+
+# Dockerfile образа НЕ сверяется побайтово, и это не упущение.
+#
+# С #1 направление истины у него перевёрнуто: харнесс собирает раннера из
+# `agent/Dockerfile` ЗДЕСЬ, а `openhands/Dockerfile` там — устаревшая копия,
+# помеченная шапкой и ждущая удаления на #2. Побайтовое равенство означало бы
+# требование не ставить эту шапку.
+#
+# Но инвариант, ради которого сверка и была (R9), пока жив: до удаления копии
+# оба образа обязаны сходиться в uid раннера и мажоре Node — их сверяют тесты
+# в `poh-issue-agents`. Поэтому сверяются ЗНАЧЕНИЯ, а не байты.
+IMAGE_INVARIANTS=(
+  "useradd -u:useradd\\s+-m\\s+-u\\s+([0-9]+)"
+  "Node major:deb\\.nodesource\\.com/setup_([0-9]+)\\.x"
 )
 
 if [ ! -d "$WORK/.git" ]; then
@@ -58,6 +72,31 @@ for pair in "${PAIRS[@]}"; do
     drifted=1
   fi
 done
+
+# Инварианты образа: значения, а не байты (см. IMAGE_INVARIANTS выше).
+mine="$here/agent/Dockerfile"
+theirs="$WORK/openhands/Dockerfile"
+if [ -f "$theirs" ]; then
+  for entry in "${IMAGE_INVARIANTS[@]}"; do
+    label="${entry%%:*}"
+    pattern="${entry#*:}"
+    # Разделитель `|`, а не `/`: в регексах есть слэши (URL nodesource).
+    a=$(sed -nE "s|.*${pattern}.*|\1|p" "$mine"   | head -1)
+    b=$(sed -nE "s|.*${pattern}.*|\1|p" "$theirs" | head -1)
+    if [ -z "$a" ] || [ -z "$b" ]; then
+      echo "?? образ: '$label' не найден (здесь='${a:-—}', там='${b:-—}')"
+      drifted=1
+    elif [ "$a" = "$b" ]; then
+      echo "ok образ: $label = $a"
+    else
+      echo "!! образ: $label разошёлся — здесь $a, там $b"
+      drifted=1
+    fi
+  done
+else
+  # Копия удалена (#2 сделан) — сверять больше нечего и не нужно.
+  echo "ok образ: openhands/Dockerfile в источнике отсутствует — копия удалена"
+fi
 
 echo
 if [ "$drifted" -ne 0 ]; then
