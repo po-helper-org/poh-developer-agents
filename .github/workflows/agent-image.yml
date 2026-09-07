@@ -1,0 +1,70 @@
+# Сборка образа агента разработки и проверка инвариантов ВНУТРИ него.
+#
+# Приёмка #1 требовала стенда, и это оказалось лишним: собрать образ и заглянуть
+# внутрь умеет обычный раннер Actions. Стенд нужен только третьему критерию —
+# живому прогону разработки, которому нужны Temporal и вебхуки.
+#
+# Проверяются те же два инварианта, что и в тестах, но иначе. Тесты читают ТЕКСТ
+# Dockerfile и потому ловят расхождение объявлений; здесь запускается СОБРАННЫЙ
+# образ, и ловится расхождение объявления с реальностью — случай, когда файл
+# говорит одно, а базовый образ или пакет приносят другое.
+name: agent image
+
+on:
+  pull_request:
+    paths: ['agent/**', '.github/workflows/agent-image.yml', 'poh_developer/runner.py']
+  push:
+    branches: [main]
+    paths: ['agent/**', '.github/workflows/agent-image.yml', 'poh_developer/runner.py']
+  workflow_dispatch:
+
+concurrency:
+  group: agent-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: собрать и заглянуть внутрь
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # Контекст КОРНЕВОЙ, файл выбирается путём — ровно так же, как это делает
+      # харнесс через DEVELOPER_AGENT_CONTEXT и ключ `dockerfile:`. Собирать
+      # иначе значило бы проверять не то, что собирается на стенде.
+      - name: Собрать образ
+        run: docker build -f agent/Dockerfile -t poh-openhands-runner:ci .
+
+      - name: uid раннера совпадает с объявленным
+        # Прогон #19: воркер готовит каталог задачи от root и передаёт раннеру
+        # chown. Разъехались числа — агент молча уходит писать в /tmp и
+        # докладывает об успехе. Потеряна 21 минута, PR открылся пустым.
+        run: |
+          set -euo pipefail
+          declared=$(python3 -c 'import re,pathlib; print(re.search(r"RUNNER_UID = (\d+)", pathlib.Path("poh_developer/develop.py").read_text()).group(1))')
+          actual=$(docker run --rm --entrypoint id poh-openhands-runner:ci -u)
+          echo "объявлено: $declared, в образе: $actual"
+          [ "$declared" = "$actual" ]
+
+      - name: мажор Node совпадает с объявленным
+        # Прогон #13: код проекта исполняет раннер, а проверки того же проекта
+        # гоняет воркер той же командой, что CI. `node --test "tests/*.test.mjs"`
+        # раскрывает glob сам начиная с 22; в образе воркера стоял 20, и вышел
+        # красный шаг разработки на зелёном коде.
+        run: |
+          set -euo pipefail
+          declared=$(python3 -c 'import re,pathlib; print(re.search(r"RUNNER_NODE_MAJOR = (\d+)", pathlib.Path("poh_developer/runner.py").read_text()).group(1))')
+          actual=$(docker run --rm --entrypoint node poh-openhands-runner:ci -v | sed -E "s/^v([0-9]+)\..*/\1/")
+          echo "объявлено: $declared, в образе: $actual"
+          [ "$declared" = "$actual" ]
+
+      - name: агент разработки запускается
+        # Не «файл на месте», а «бинарь отвечает». Образ, где openhands не
+        # стартует, снаружи неотличим от собранного правильно — до первого
+        # живого прогона, который умрёт на инициализации, не сделав ни одного
+        # хода (`develop.agent_moved` это как раз и различает).
+        run: docker run --rm --entrypoint openhands poh-openhands-runner:ci --help | head -5
