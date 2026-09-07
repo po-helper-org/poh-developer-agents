@@ -12,19 +12,40 @@
 иметь два способа делать одно.
 """
 
-from poh_developer import ports
+from poh_developer import activities as _activities, ports
 
 # Своя очередь Temporal. Харнесс уже держит три в одном процессе
 # (`issue-lifecycle`, `delivery`, `howtodemo`) — четвёртая продолжает практику,
 # а не заводит исключение.
 TASK_QUEUE = "developer"
 
-# Заполняются по мере переезда: воркфлоу и активности стадии приезжают
-# следующими заходами (#3b и #3c). Пустые списки здесь — не заглушка, а
-# честное состояние: подключать пока нечего, и харнесс, зарегистрировав их,
-# получит рабочего воркера без единой задачи.
+# Воркфлоу приезжают следующим заходом (#3c); пустой список — честное
+# состояние, а не заглушка: зарегистрировав его, харнесс получит воркера,
+# который исполняет активности стадии по зову чужого воркфлоу.
 WORKFLOWS: list = []
-ACTIVITIES: list = []
+
+# Все точки входа стадии. Перечислены поимённо, а не собраны обходом модуля:
+# activity, потерянная при переезде, иначе проявилась бы не отсутствием в
+# списке, а зависшим воркфлоу на живом прогоне.
+ACTIVITIES = [
+    _activities.dev_begin,
+    _activities.dev_prepare,
+    _activities.dev_announce,
+    _activities.dev_dispatch,
+    _activities.trigger_openhands_resolver,
+    _activities.dev_run_agent,
+    _activities.dev_tests,
+    _activities.dev_diagnose,
+    _activities.dev_repair,
+    _activities.dev_announce_repair,
+    _activities.dev_empty_run_reason,
+    _activities.dev_followups,
+    _activities.dev_publish,
+    _activities.dev_publish_partial,
+    _activities.capture_episode,
+    _activities.run_pr_fix_round,
+    _activities.finish_pr_fixing,
+]
 
 # Имя активности, которую стадия ждёт ОТ харнесса. Объявлено здесь, чтобы та
 # сторона регистрировала её под тем же именем, а не по памяти.
@@ -35,13 +56,22 @@ ACTIVITIES: list = []
 # мост харнесса обязан звать её на очереди `developer`, а не на своей.
 CONFLICT_FIX_ACTIVITY = "delivery_fix_conflicts"
 
+# План работ по требованиям остаётся у харнесса и зовётся стадией по имени.
+#
+# Решение принято по зависимостям, а не по теме: шаг строит план вызовом
+# `claude -p` в клоне — той же машинерией, что и стадии анализа, вместе с их
+# разбором кредов провайдера и лимита частоты. Забрать его сюда значило бы
+# завести вторую копию этой машинерии ради одного вызова, и копия расходилась
+# бы с оригиналом ровно там, где меняют провайдера.
+PLAN_ACTIVITY = "build_mvp_plan"
+
 
 def install(*, github=None, issue_blocks=None, repowise=None,
-            memory=None, llm=None, prompts=None) -> None:
+            memory=None, telemetry=None) -> None:
     """Подставить реализации портов.
 
     Именованные аргументы, а не словарь: опечатка в имени порта должна быть
     видна на вызове, а не проявиться отказом на первом живом прогоне.
     """
     ports.configure(github=github, issue_blocks=issue_blocks,
-                    repowise=repowise, memory=memory, llm=llm, prompts=prompts)
+                    repowise=repowise, memory=memory, telemetry=telemetry)
