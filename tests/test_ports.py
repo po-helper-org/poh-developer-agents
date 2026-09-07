@@ -63,7 +63,7 @@ def test_configure_is_additive():
 
 
 def test_none_does_not_erase_a_configured_port():
-    """`install()` передаёт все шесть имён, и незаданные приходят как None.
+    """`install()` передаёт все пять имён, и незаданные приходят как None.
     Затирать ими уже подставленное значило бы, что порядок вызовов решает."""
     stub = object()
     ports.configure(github=stub)
@@ -76,15 +76,14 @@ def test_install_passes_every_port_by_name():
     """Мост харнесса зовёт install() именованными аргументами — опечатка видна
     на вызове, а не отказом на прогоне."""
     impls = {n: object() for n in
-             ("github", "issue_blocks", "repowise", "memory", "llm", "prompts")}
+             ("github", "issue_blocks", "repowise", "memory", "telemetry")}
     integration.install(**impls)
 
     assert ports.github() is impls["github"]
     assert ports.issue_blocks() is impls["issue_blocks"]
     assert ports.repowise() is impls["repowise"]
     assert ports.memory() is impls["memory"]
-    assert ports.llm() is impls["llm"]
-    assert ports.prompts() is impls["prompts"]
+    assert ports.telemetry() is impls["telemetry"]
 
 
 def test_queue_is_its_own():
@@ -94,11 +93,38 @@ def test_queue_is_its_own():
     assert integration.TASK_QUEUE not in ("issue-lifecycle", "delivery", "howtodemo")
 
 
-def test_nothing_is_registered_yet():
-    """Честное состояние захода 3a: подключать пока нечего.
+def test_every_activity_is_registered():
+    """Точка входа, потерянная при переезде, проявилась бы зависшим воркфлоу на
+    живом прогоне, а не пустым местом в списке.
 
-    Воркфлоу и активности приезжают следующими заходами. Тест сторожит не
-    пустоту, а то, что её заметят: заполнив списки, придётся вернуться сюда.
+    Сверка со ВСЕМИ `@activity.defn` модуля, а не с числом: список собран
+    руками, и забытая строка — ровно тот способ его сломать.
     """
+    from poh_developer import activities
+
+    defined = {getattr(activities, n) for n in dir(activities)
+               if callable(getattr(activities, n, None))
+               and getattr(getattr(activities, n), "__temporal_activity_definition", None)}
+
+    assert set(integration.ACTIVITIES) == defined
+    assert len(integration.ACTIVITIES) == len(defined)   # без повторов
+
+
+def test_activity_names_are_unchanged_by_the_move():
+    """Temporal сверяет активность по ИМЕНИ, и история идущего прогона знает
+    прежние. Переименование здесь оборвало бы прогон, начатый до переезда."""
+    from temporalio import activity
+
+    names = {activity._Definition.must_from_callable(f).name
+             for f in integration.ACTIVITIES}
+
+    assert "dev_prepare" in names
+    assert "run_pr_fix_round" in names
+    assert "trigger_openhands_resolver" in names
+    assert all(not n.startswith("poh_developer") for n in names)
+
+
+def test_workflows_are_not_here_yet():
+    """Воркфлоу приезжают следующим заходом. Тест сторожит не пустоту, а то,
+    что её заметят: заполнив список, придётся вернуться сюда."""
     assert integration.WORKFLOWS == []
-    assert integration.ACTIVITIES == []
