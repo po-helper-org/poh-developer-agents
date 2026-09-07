@@ -132,8 +132,10 @@ from poh_developer import worktree
 ```
 
 ```
-# worker/requirements.txt — тег, не ветка и не SHA (R2)
-poh-developer @ git+https://github.com/po-helper-org/poh-developer-agents@v0.1.0
+# worker/requirements.txt — неподвижная ревизия, не ветка (R2).
+# Тег был предпочтителен, но его пуш отклоняется шлюзом с 403 — поставлен SHA,
+# как у poh-delivery-agent и poh-howtodemo-agent рядом.
+poh-developer @ git+https://github.com/po-helper-org/poh-developer-agents@b1e2df20c1a51d441ff19cd1ff1809ee763e1665
 ```
 
 **Step 1: Довезти `task_context` в пакет**
@@ -142,7 +144,7 @@ poh-developer @ git+https://github.com/po-helper-org/poh-developer-agents@v0.1.0
 - [ ] `pytest -q` зелёный здесь
 
 **Step 2: Тег и установка**
-- [ ] Тег `v0.1.0` на текущем `main` `poh-developer-agents`
+- [x] ~~Тег `v0.1.0`~~ → полный SHA `b1e2df2`: пуш тегов отклоняется шлюзом (403)
 - [ ] Строка в `worker/requirements.txt` с комментарием про политику пина
 - [ ] `docker compose build issue-worker` проходит
 
