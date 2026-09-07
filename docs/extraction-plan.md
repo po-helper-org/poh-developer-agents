@@ -112,7 +112,8 @@ from poh_developer.worktree import publish
 # poh-infra/harness/docker-compose.yml
 openhands-runner:
   build:
-    context: "${DEVELOPER_AGENTS_CONTEXT:-https://github.com/po-helper-org/poh-developer-agents.git#main:agent}"
+    context: "${DEVELOPER_AGENT_CONTEXT:-https://github.com/po-helper-org/poh-developer-agents.git#main}"
+    dockerfile: agent/Dockerfile
   image: "${DEVELOP_RUNNER_IMAGE:-poh-openhands-runner:local}"
 ```
 

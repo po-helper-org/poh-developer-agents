@@ -49,8 +49,11 @@
 1. **`openhands-runner` уже собирается из git-контекста** — просто указывает на
    `ISSUE_AGENT_CONTEXT` с `dockerfile: openhands/Dockerfile`. Переезд образа —
    одна переменная.
-2. **Compose уже умеет подкаталоги**: `PR_AGENT_CONTEXT=…poh-pr-agents.git#main:self-hosted`.
-   Значит `…poh-developer-agents.git#main:agent` работает без новой машинерии.
+2. **Одна переменная обслуживает все образы своего репозитория**, а файл
+   выбирается ключом `dockerfile:`. Compose умеет и подкаталог в контексте
+   (`PR_AGENT_CONTEXT=…poh-pr-agents.git#main:self-hosted`), но здесь он не
+   нужен: корневая форма даёт одну переменную на репозиторий вместо двух,
+   а локальный путь для отладки указывает на клон, а не внутрь него.
 3. **Харнесс уже держит три очереди Temporal** в одном процессе воркера:
    `issue-lifecycle`, `delivery`, `howtodemo`. Четвёртая — не исключение, а
    продолжение практики.
@@ -66,7 +69,7 @@
                       poh-developer-agents.git
                                 │
         ┌───────────────────────┼───────────────────────┐
-        │ #main:agent           │ @v0.x.0 (pip)         │ #main
+        │ #main + dockerfile:   │ @v0.x.0 (pip)         │ #main + dockerfile:
         ▼                       ▼                       ▼
   openhands-runner        issue-worker            dev-worker
   (образ агента)          (поставил пакет,        (свой контейнер,
@@ -87,7 +90,7 @@
 
 | Шаг | Что делает | Обратимость |
 |---|---|---|
-| **1. Образ** | `DEVELOPER_AGENT_CONTEXT=…#main:agent` в compose | одна переменная |
+| **1. Образ** | `DEVELOPER_AGENT_CONTEXT=…#main` + `dockerfile: agent/Dockerfile` | одна переменная |
 | **2. Пакет** | чистые модули ставятся `pip`, копии в `poh-issue-agents` удаляются | revert коммита |
 | **3. Порты** | 1215 строк активностей и 347 воркфлоу переезжают, появляется `ports.py` | **точка невозврата** |
 | **4. Сервис** | `dev-worker` отдельным контейнером, очередь `developer` | вернуть регистрацию в общий воркер |

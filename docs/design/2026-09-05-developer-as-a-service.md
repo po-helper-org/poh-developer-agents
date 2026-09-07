@@ -67,7 +67,8 @@ openhands-runner:
 # станет — подкаталог в контексте, как у PR_AGENT_CONTEXT
 openhands-runner:
   build:
-    context: "${DEVELOPER_AGENT_CONTEXT:-https://github.com/po-helper-org/poh-developer-agents.git#main:agent}"
+    context: "${DEVELOPER_AGENT_CONTEXT:-https://github.com/po-helper-org/poh-developer-agents.git#main}"
+    dockerfile: agent/Dockerfile
   image: "${DEVELOP_RUNNER_IMAGE:-poh-openhands-runner:local}"
 ```
 
@@ -276,7 +277,8 @@ side.append(Worker(client, task_queue=developer.TASK_QUEUE,
 ```yaml
 dev-worker:
   build:
-    context: "${DEVELOPER_AGENT_CONTEXT_ROOT:-https://github.com/po-helper-org/poh-developer-agents.git#main}"
+    context: "${DEVELOPER_AGENT_CONTEXT:-https://github.com/po-helper-org/poh-developer-agents.git#main}"
+    dockerfile: Dockerfile
   image: poh-developer-agent-worker:harness
   restart: unless-stopped
   environment: *issue-env
@@ -310,6 +312,31 @@ dev-worker:
 - [ ] Переключение сделано на пустой очереди либо под `workflow.patched(...)`
 
 ---
+
+## Тикеты
+
+Заходы заведены тикетами линейной цепью; рабочие чек-листы живут там, этот
+документ остаётся замыслом.
+
+| Тикет | Заход | Блокируется |
+|---|---|---|
+| [#1](https://github.com/po-helper-org/poh-developer-agents/issues/1) | образ агента собирается отсюда | — |
+| [#2](https://github.com/po-helper-org/poh-developer-agents/issues/2) | чистые модули пакетом, копии удаляются | #1 |
+| [#3](https://github.com/po-helper-org/poh-developer-agents/issues/3) | активности и воркфлоу через порты | #2 |
+| [#4](https://github.com/po-helper-org/poh-developer-agents/issues/4) | свой контейнер `dev-worker` | #3 |
+
+**Что изменил грилинг 2026-09-05.** Два решения замысла отменены, объём Task 1
+вырос вчетверо:
+
+- контекст сборки **корневой** с ключом `dockerfile:`, а не подкаталог
+  `#main:agent`. Следствие — одна переменная `DEVELOPER_AGENT_CONTEXT` вместо
+  двух: та же обслуживает и `dev-worker` на Task 4;
+- Task 1 трогает не два файла, а восемь. Помимо compose и `.env.example`:
+  `DEVELOP_RUNNER_IMAGE` оказалась не объявлена нигде, хотя compose читал её
+  всё это время; контекст сборки упомянут в четырёх документах, включая
+  релизную заметку для СБ; `.dockerignore` заводится сейчас, чтобы про него не
+  вспоминали на Task 4; старый `openhands/Dockerfile` помечается шапкой, пока
+  не удалён на #2.
 
 ## Порядок PR
 
