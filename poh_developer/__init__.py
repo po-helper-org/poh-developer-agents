@@ -8,4 +8,5 @@
 """
 
 __all__ = ["activities", "develop", "integration", "ports", "pr_closing",
-           "runner", "task_context", "test_report", "worktree", "workflow_types"]
+           "runner", "task_context", "test_report", "worktree", "workflow_types",
+           "workflows"]
