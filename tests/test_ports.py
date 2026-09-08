@@ -124,7 +124,7 @@ def test_activity_names_are_unchanged_by_the_move():
     assert all(not n.startswith("poh_developer") for n in names)
 
 
-def test_workflows_are_not_here_yet():
-    """Воркфлоу приезжают следующим заходом. Тест сторожит не пустоту, а то,
-    что её заметят: заполнив список, придётся вернуться сюда."""
-    assert integration.WORKFLOWS == []
+def test_the_stage_registers_its_own_workflows():
+    """Стадия отдаёт контуру и шаги, и порядок между ними. Проверка состава —
+    в `test_workflows.py`, здесь только факт: подключать есть что."""
+    assert integration.WORKFLOWS
